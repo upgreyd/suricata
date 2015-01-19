@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2013 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -27,8 +27,8 @@
 
 #include "util-error.h"
 #include "util-debug.h"
+#include "util-ip.h"
 #include "util-radix-tree.h"
-#include "util-host-os-info.h"
 #include "util-unittest.h"
 #include "suricata-common.h"
 #include "threads.h"
@@ -42,7 +42,9 @@
  *  time out code will use it to check if a host's
  *  reputation info is outdated. */
 SC_ATOMIC_DECLARE(uint32_t, srep_eversion);
-/** reputation version set to the host's reputation */
+/** reputation version set to the host's reputation,
+ *  this will be set to 1 before rep files are loaded,
+ *  so hosts will always have a minial value of 1 */
 static uint32_t srep_version = 0;
 
 static uint32_t SRepIncrVersion(void) {
@@ -351,14 +353,29 @@ static int SRepLoadFile(char *filename) {
                 if (h->iprep != NULL) {
                     SReputation *rep = h->iprep;
 
-                    /* if version is 0, it has been used before, so
-                     * clear it */
-                    if (rep->version != 0) {
+                    /* if version is outdated, it's an older entry that we'll
+                     * now replace. */
+                    if (rep->version != SRepGetVersion()) {
                         memset(rep, 0x00, sizeof(SReputation));
                     }
 
                     rep->version = SRepGetVersion();
                     rep->rep[cat] = value;
+
+                    SCLogDebug("host %p iprep %p setting cat %u to value %u",
+                        h, h->iprep, cat, value);
+#ifdef DEBUG
+                    if (SCLogDebugEnabled()) {
+                        int i;
+                        for (i = 0; i < SREP_MAX_CATS; i++) {
+                            if (rep->rep[i] == 0)
+                                continue;
+
+                            SCLogDebug("--> host %p iprep %p cat %d to value %u",
+                                    h, h->iprep, i, rep->rep[i]);
+                        }
+                    }
+#endif
                 }
 
                 HostRelease(h);
@@ -802,7 +819,7 @@ Reputation *SCReputationAddIPV4Data(uint8_t *ipv4addr, int netmask_value, Reputa
             return NULL;
         }
 
-        SCRadixChopIPAddressAgainstNetmask((uint8_t *)ipv4_addr, netmask_value, 32);
+        MaskIPNetblock((uint8_t *)ipv4_addr, netmask_value, 32);
 
         /* Be careful with the mutex */
         SCMutexLock(&rep_ctx->reputationIPV4_lock);
@@ -825,18 +842,19 @@ Reputation *SCReputationAddIPV4Data(uint8_t *ipv4addr, int netmask_value, Reputa
  */
 Reputation *SCReputationLookupIPV4ExactMatch(uint8_t *ipv4_addr)
 {
-    Reputation *rep_data;
+    Reputation *rep_data = NULL;
 
     /* Be careful with this (locking)*/
     SCMutexLock(&rep_ctx->reputationIPV4_lock);
 
-    SCRadixNode *node = SCRadixFindKeyIPV4ExactMatch(ipv4_addr, rep_ctx->reputationIPV4_tree);
-    if (node == NULL || node->prefix == NULL || node->prefix->user_data_result == NULL) {
+    void *user_data = NULL;
+    (void)SCRadixFindKeyIPV4ExactMatch(ipv4_addr, rep_ctx->reputationIPV4_tree, &user_data);
+    if (user_data == NULL) {
         rep_data = NULL;
     } else {
         /* Yes, we clone it because the pointer can be outdated
          * while another thread remove this reputation */
-        rep_data = SCReputationClone((Reputation *)node->prefix->user_data_result);
+        rep_data = SCReputationClone((Reputation *)user_data);
     }
 
     SCMutexUnlock(&rep_ctx->reputationIPV4_lock);
@@ -859,13 +877,14 @@ Reputation *SCReputationLookupIPV4BestMatch(uint8_t *ipv4_addr)
     /* Be careful with this (locking)*/
     SCMutexLock(&rep_ctx->reputationIPV4_lock);
 
-    SCRadixNode *node = SCRadixFindKeyIPV4BestMatch(ipv4_addr, rep_ctx->reputationIPV4_tree);
-    if (node == NULL || node->prefix == NULL || node->prefix->user_data_result == NULL) {
+    void *user_data = NULL;
+    (void)SCRadixFindKeyIPV4BestMatch(ipv4_addr, rep_ctx->reputationIPV4_tree, &user_data);
+    if (user_data == NULL) {
         rep_data = NULL;
     } else {
         /* Yes, we clone it because the pointer can be outdated
          * while another thread remove this reputation */
-        rep_data = SCReputationClone((Reputation *)node->prefix->user_data_result);
+        rep_data = SCReputationClone((Reputation *)user_data);
     }
 
     SCMutexUnlock(&rep_ctx->reputationIPV4_lock);
@@ -888,13 +907,14 @@ Reputation *SCReputationLookupIPV6BestMatch(uint8_t *ipv6_addr)
     /* Be careful with this (locking)*/
     SCMutexLock(&rep_ctx->reputationIPV6_lock);
 
-    SCRadixNode *node = SCRadixFindKeyIPV6BestMatch(ipv6_addr, rep_ctx->reputationIPV6_tree);
-    if (node == NULL || node->prefix == NULL || node->prefix->user_data_result == NULL) {
+    void *user_data = NULL;
+    (void)SCRadixFindKeyIPV6BestMatch(ipv6_addr, rep_ctx->reputationIPV6_tree, &user_data);
+    if (user_data == NULL) {
         rep_data = NULL;
     } else {
         /* Yes, we clone it because the pointer can be outdated
          * while another thread remove this reputation */
-        rep_data = SCReputationClone((Reputation *)node->prefix->user_data_result);
+        rep_data = SCReputationClone((Reputation *)user_data);
     }
 
     SCMutexUnlock(&rep_ctx->reputationIPV6_lock);
@@ -917,13 +937,14 @@ Reputation *SCReputationLookupIPV6ExactMatch(uint8_t *ipv6_addr)
     /* Be careful with this (locking)*/
     SCMutexLock(&rep_ctx->reputationIPV6_lock);
 
-    SCRadixNode *node = SCRadixFindKeyIPV6ExactMatch(ipv6_addr, rep_ctx->reputationIPV6_tree);
-    if (node == NULL || node->prefix == NULL || node->prefix->user_data_result == NULL) {
+    void *user_data = NULL;
+    (void)SCRadixFindKeyIPV6ExactMatch(ipv6_addr, rep_ctx->reputationIPV6_tree, &user_data);
+    if (user_data == NULL) {
         rep_data = NULL;
     } else {
         /* Yes, we clone it because the pointer can be outdated
          * while another thread remove this reputation */
-        rep_data = SCReputationClone((Reputation *)node->prefix->user_data_result);
+        rep_data = SCReputationClone((Reputation *)user_data);
     }
 
     SCMutexUnlock(&rep_ctx->reputationIPV6_lock);
@@ -942,11 +963,12 @@ Reputation *SCReputationLookupIPV6ExactMatch(uint8_t *ipv6_addr)
  */
 Reputation *SCReputationLookupIPV4ExactMatchReal(uint8_t *ipv4_addr)
 {
-    SCRadixNode *node = SCRadixFindKeyIPV4ExactMatch(ipv4_addr, rep_ctx->reputationIPV4_tree);
-    if (node == NULL || node->prefix == NULL || node->prefix->user_data_result == NULL) {
+    void *user_data = NULL;
+    (void)SCRadixFindKeyIPV4ExactMatch(ipv4_addr, rep_ctx->reputationIPV4_tree, &user_data);
+    if (user_data == NULL) {
         return NULL;
     } else {
-        return (Reputation *)node->prefix->user_data_result;
+        return (Reputation *)user_data;
     }
 }
 
@@ -961,11 +983,12 @@ Reputation *SCReputationLookupIPV4ExactMatchReal(uint8_t *ipv4_addr)
  */
 Reputation *SCReputationLookupIPV4BestMatchReal(uint8_t *ipv4_addr)
 {
-    SCRadixNode *node = SCRadixFindKeyIPV4BestMatch(ipv4_addr, rep_ctx->reputationIPV4_tree);
-    if (node == NULL || node->prefix == NULL || node->prefix->user_data_result == NULL) {
+    void *user_data = NULL;
+    (void)SCRadixFindKeyIPV4BestMatch(ipv4_addr, rep_ctx->reputationIPV4_tree, &user_data);
+    if (user_data == NULL) {
         return NULL;
     } else {
-        return (Reputation *)node->prefix->user_data_result;
+        return (Reputation *)user_data;
     }
 }
 
@@ -980,11 +1003,12 @@ Reputation *SCReputationLookupIPV4BestMatchReal(uint8_t *ipv4_addr)
  */
 Reputation *SCReputationLookupIPV6BestMatchReal(uint8_t *ipv6_addr)
 {
-    SCRadixNode *node = SCRadixFindKeyIPV6BestMatch(ipv6_addr, rep_ctx->reputationIPV6_tree);
-    if (node == NULL || node->prefix == NULL || node->prefix->user_data_result == NULL) {
+    void *user_data = NULL;
+    (void)SCRadixFindKeyIPV6BestMatch(ipv6_addr, rep_ctx->reputationIPV6_tree, &user_data);
+    if (user_data == NULL) {
         return NULL;
     } else {
-        return (Reputation *)node->prefix->user_data_result;
+        return (Reputation *)user_data;
     }
 }
 
@@ -999,11 +1023,12 @@ Reputation *SCReputationLookupIPV6BestMatchReal(uint8_t *ipv6_addr)
  */
 Reputation *SCReputationLookupIPV6ExactMatchReal(uint8_t *ipv6_addr)
 {
-    SCRadixNode *node = SCRadixFindKeyIPV6ExactMatch(ipv6_addr, rep_ctx->reputationIPV6_tree);
-    if (node == NULL || node->prefix == NULL || node->prefix->user_data_result == NULL) {
+    void *user_data = NULL;
+    (void)SCRadixFindKeyIPV6ExactMatch(ipv6_addr, rep_ctx->reputationIPV6_tree, &user_data);
+    if (user_data == NULL) {
         return NULL;
     } else {
-        return (Reputation *)node->prefix->user_data_result;
+        return (Reputation *)user_data;
     }
 }
 
@@ -1072,7 +1097,7 @@ Reputation *SCReputationAddIPV6Data(uint8_t *ipv6addr, int netmask_value, Reputa
             return NULL;
         }
 
-        SCRadixChopIPAddressAgainstNetmask((uint8_t *)ipv6_addr, netmask_value, 128);
+        MaskIPNetblock((uint8_t *)ipv6_addr, netmask_value, 128);
 
         /* Be careful with the mutex */
         SCMutexLock(&rep_ctx->reputationIPV6_lock);

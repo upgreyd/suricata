@@ -68,6 +68,7 @@ void ReceiveErfFileThreadExitStats(ThreadVars *, void *);
 TmEcode ReceiveErfFileThreadDeinit(ThreadVars *, void *);
 
 TmEcode DecodeErfFileThreadInit(ThreadVars *, void *, void **);
+TmEcode DecodeErfFileThreadDeinit(ThreadVars *tv, void *data);
 TmEcode DecodeErfFile(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
 
 /**
@@ -98,7 +99,7 @@ TmModuleDecodeErfFileRegister(void)
     tmm_modules[TMM_DECODEERFFILE].ThreadInit = DecodeErfFileThreadInit;
     tmm_modules[TMM_DECODEERFFILE].Func = DecodeErfFile;
     tmm_modules[TMM_DECODEERFFILE].ThreadExitPrintStats = NULL;
-    tmm_modules[TMM_DECODEERFFILE].ThreadDeinit = NULL;
+    tmm_modules[TMM_DECODEERFFILE].ThreadDeinit = DecodeErfFileThreadDeinit;
     tmm_modules[TMM_DECODEERFFILE].RegisterTests = NULL;
     tmm_modules[TMM_DECODEERFFILE].cap_flags = 0;
     tmm_modules[TMM_DECODEERFFILE].flags = TM_FLAG_DECODE_TM;
@@ -252,7 +253,7 @@ DecodeErfFileThreadInit(ThreadVars *tv, void *initdata, void **data)
 {
     SCEnter();
     DecodeThreadVars *dtv = NULL;
-    dtv = DecodeThreadVarsAlloc();
+    dtv = DecodeThreadVarsAlloc(tv);
 
     if (dtv == NULL)
         SCReturnInt(TM_ECODE_FAILED);
@@ -261,6 +262,13 @@ DecodeErfFileThreadInit(ThreadVars *tv, void *initdata, void **data)
 
     *data = (void *)dtv;
 
+    SCReturnInt(TM_ECODE_OK);
+}
+
+TmEcode DecodeErfFileThreadDeinit(ThreadVars *tv, void *data)
+{
+    if (data != NULL)
+        DecodeThreadVarsFree(data);
     SCReturnInt(TM_ECODE_OK);
 }
 
@@ -276,9 +284,14 @@ DecodeErfFile(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueu
     SCEnter();
     DecodeThreadVars *dtv = (DecodeThreadVars *)data;
 
+    /* XXX HACK: flow timeout can call us for injected pseudo packets
+     *           see bug: https://redmine.openinfosecfoundation.org/issues/1107 */
+    if (p->flags & PKT_PSEUDO_STREAM_END)
+        return TM_ECODE_OK;
+
     /* Update counters. */
     SCPerfCounterIncr(dtv->counter_pkts, tv->sc_perf_pca);
-    SCPerfCounterIncr(dtv->counter_pkts_per_sec, tv->sc_perf_pca);
+//    SCPerfCounterIncr(dtv->counter_pkts_per_sec, tv->sc_perf_pca);
 
     SCPerfCounterAddUI64(dtv->counter_bytes, tv->sc_perf_pca, GET_PKT_LEN(p));
 #if 0
@@ -291,6 +304,8 @@ DecodeErfFile(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, PacketQueu
     SCPerfCounterSetUI64(dtv->counter_max_pkt_size, tv->sc_perf_pca, GET_PKT_LEN(p));
 
     DecodeEthernet(tv, dtv, p, GET_PKT_DATA(p), GET_PKT_LEN(p), pq);
+
+    PacketDecodeFinalize(tv, dtv, p);
 
     SCReturnInt(TM_ECODE_OK);
 }

@@ -57,6 +57,7 @@ void DetectPktDataRegister(void) {
     sigmatch_table[DETECT_PKT_DATA].Setup = DetectPktDataSetup;
     sigmatch_table[DETECT_PKT_DATA].Free  = NULL;
     sigmatch_table[DETECT_PKT_DATA].RegisterTests = DetectPktDataTestRegister;
+    sigmatch_table[DETECT_PKT_DATA].flags = SIGMATCH_NOOPT;
 }
 
 /**
@@ -73,7 +74,7 @@ void DetectPktDataRegister(void) {
 static int DetectPktDataSetup (DetectEngineCtx *de_ctx, Signature *s, char *str)
 {
     SCEnter();
-    s->init_flags &= (~SIG_FLAG_INIT_FILE_DATA);
+    s->list = DETECT_SM_LIST_NOTSET;
 
     return 0;
 }
@@ -126,8 +127,8 @@ static int DetectPktDataTest01(void)
     }
 
 
-    if (sig->init_flags & SIG_FLAG_INIT_FILE_DATA) {
-        printf("sm init_flags SIG_FLAG_INIT_FILE_DATA set: ");
+    if (sig->list != DETECT_SM_LIST_NOTSET) {
+        printf("sticky buffer set: ");
         goto end;
     }
 

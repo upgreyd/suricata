@@ -39,7 +39,6 @@
 #include "runmode-af-packet.h"
 #include "log-httplog.h"
 #include "output.h"
-#include "cuda-packet-batcher.h"
 #include "detect-engine-mpm.h"
 
 #include "alert-fastlog.h"
@@ -58,7 +57,6 @@
 
 extern int max_pending_packets;
 
-static const char *default_mode_auto = NULL;
 static const char *default_mode_autofp = NULL;
 
 const char *RunModeAFPGetDefaultMode(void)
@@ -68,7 +66,6 @@ const char *RunModeAFPGetDefaultMode(void)
 
 void RunModeIdsAFPRegister(void)
 {
-    default_mode_auto = "autofp";
     RunModeRegisterNewRunMode(RUNMODE_AFP_DEV, "auto",
                               "Multi threaded af-packet mode",
                               RunModeIdsAFPAuto);
@@ -144,6 +141,7 @@ void *ParseAFPConfig(const char *iface)
     aconf->flags = 0;
     aconf->bpf_filter = NULL;
     aconf->out_iface = NULL;
+    aconf->copy_mode = AFP_COPY_MODE_NONE;
 
     if (ConfGet("bpf-filter", &bpf_filter) == 1) {
         if (strlen(bpf_filter) > 0) {
@@ -253,10 +251,11 @@ void *ParseAFPConfig(const char *iface)
         /* In hash mode, we also ask for defragmentation needed to
          * compute the hash */
         uint16_t defrag = 0;
+        int conf_val = 0;
         SCLogInfo("Using flow cluster mode for AF_PACKET (iface %s)",
                 aconf->iface);
-        ConfGetChildValueBoolWithDefault(if_root, if_default, "defrag", (int *)&defrag);
-        if (defrag) {
+        ConfGetChildValueBoolWithDefault(if_root, if_default, "defrag", &conf_val);
+        if (conf_val) {
             SCLogInfo("Using defrag kernel functionality for AF_PACKET (iface %s)",
                     aconf->iface);
             defrag = PACKET_FANOUT_FLAG_DEFRAG;
@@ -332,6 +331,84 @@ int AFPConfigGeThreadsCount(void *conf)
 {
     AFPIfaceConfig *afp = (AFPIfaceConfig *)conf;
     return afp->threads;
+}
+
+int AFPRunModeIsIPS()
+{
+    int nlive = LiveGetDeviceCount();
+    int ldev;
+    ConfNode *if_root;
+    ConfNode *if_default = NULL;
+    ConfNode *af_packet_node;
+    int has_ips = 0;
+    int has_ids = 0;
+
+    /* Find initial node */
+    af_packet_node = ConfGetNode("af-packet");
+    if (af_packet_node == NULL) {
+        return 0;
+    }
+
+    if_default = ConfNodeLookupKeyValue(af_packet_node, "interface", "default");
+
+    for (ldev = 0; ldev < nlive; ldev++) {
+        char *live_dev = LiveGetDeviceName(ldev);
+        if (live_dev == NULL) {
+            SCLogError(SC_ERR_INVALID_VALUE, "Problem with config file");
+            return 0;
+        }
+        char *copymodestr = NULL;
+        if_root = ConfNodeLookupKeyValue(af_packet_node, "interface", live_dev);
+
+        if (if_root == NULL) {
+            if (if_default == NULL) {
+                SCLogError(SC_ERR_INVALID_VALUE, "Problem with config file");
+                return 0;
+            }
+            if_root = if_default;
+        }
+
+        if (ConfGetChildValueWithDefault(if_root, if_default, "copy-mode", &copymodestr) == 1) {
+            if (strcmp(copymodestr, "ips") == 0) {
+                has_ips = 1;
+            } else {
+                has_ids = 1;
+            }
+        } else {
+            has_ids = 1;
+        }
+    }
+
+    if (has_ids && has_ips) {
+        SCLogInfo("AF_PACKET mode using IPS and IDS mode");
+        for (ldev = 0; ldev < nlive; ldev++) {
+            char *live_dev = LiveGetDeviceName(ldev);
+            if (live_dev == NULL) {
+                SCLogError(SC_ERR_INVALID_VALUE, "Problem with config file");
+                return 0;
+            }
+            if_root = ConfNodeLookupKeyValue(af_packet_node, "interface", live_dev);
+            char *copymodestr = NULL;
+
+            if (if_root == NULL) {
+                if (if_default == NULL) {
+                    SCLogError(SC_ERR_INVALID_VALUE, "Problem with config file");
+                    return 0;
+                }
+                if_root = if_default;
+            }
+
+            if (! ((ConfGetChildValueWithDefault(if_root, if_default, "copy-mode", &copymodestr) == 1) &&
+                        (strcmp(copymodestr, "ips") == 0))) {
+                SCLogError(SC_ERR_INVALID_ARGUMENT,
+                        "AF_PACKET IPS mode used and interface '%s' is in IDS or TAP mode. "
+                        "Sniffing '%s' but expect bad result as stream-inline is activated.",
+                        live_dev, live_dev);
+            }
+        }
+    }
+
+    return has_ips;
 }
 
 /**

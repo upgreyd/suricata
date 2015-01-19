@@ -48,8 +48,10 @@ typedef struct TcpStreamCnf_ {
     uint64_t memcap;
     uint64_t reassembly_memcap; /**< max memory usage for stream reassembly */
 
-    uint32_t max_sessions;
-    uint32_t prealloc_sessions;
+    uint32_t ssn_init_flags; /**< new ssn flags will be initialized to this */
+    uint8_t segment_init_flags; /**< new seg flags will be initialized to this */
+
+    uint32_t prealloc_sessions; /**< ssns to prealloc per stream thread */
     int midstream;
     int async_oneside;
     uint32_t reassembly_depth;  /**< Depth until when we reassemble the stream */
@@ -65,9 +67,12 @@ typedef struct TcpStreamCnf_ {
      */
     uint32_t reassembly_inline_window;
     uint8_t flags;
+    uint8_t max_synack_queued;
 } TcpStreamCnf;
 
 typedef struct StreamTcpThread_ {
+    int ssn_pool_id;
+
     uint64_t pkts;
 
     /** queue for pseudo packet(s) that were created in the stream
@@ -111,10 +116,9 @@ void StreamTcpIncrMemuse(uint64_t);
 void StreamTcpDecrMemuse(uint64_t);
 int StreamTcpCheckMemcap(uint64_t);
 
-void StreamTcpPseudoPacketSetupHeader(Packet *, Packet *);
 Packet *StreamTcpPseudoSetup(Packet *, uint8_t *, uint32_t);
 
-int StreamTcpSegmentForEach(Packet *p, uint8_t flag,
+int StreamTcpSegmentForEach(const Packet *p, uint8_t flag,
                         StreamSegmentCallback CallbackFunc,
                         void *data);
 void StreamTcpReassembleConfigEnableOverlapCheck(void);
@@ -131,12 +135,11 @@ void StreamTcpReassembleConfigEnableOverlapCheck(void);
   * \retval 0 if the stream still legal
   */
 static inline int StreamTcpCheckFlowDrops(Packet *p) {
-    extern uint8_t engine_mode;
     /* If we are on IPS mode, and got a drop action triggered from
      * the IP only module, or from a reassembled msg and/or from an
      * applayer detection, then drop the rest of the packets of the
      * same stream and avoid inspecting it any further */
-    if (IS_ENGINE_MODE_IPS(engine_mode) && (p->flow->flags & FLOW_ACTION_DROP))
+    if (EngineModeIsIPS() && (p->flow->flags & FLOW_ACTION_DROP))
         return 1;
 
     return 0;
@@ -174,7 +177,7 @@ enum {
     STREAM_HAS_UNPROCESSED_SEGMENTS_NEED_ONLY_DETECTION = 2,
 };
 
-static inline int StreamHasUnprocessedSegments(TcpSession *ssn, int direction)
+static inline int StreamNeedsReassembly(TcpSession *ssn, int direction)
 {
     /* server tcp state */
     if (direction) {
@@ -199,6 +202,13 @@ static inline int StreamHasUnprocessedSegments(TcpSession *ssn, int direction)
         }
     }
 }
+
+TmEcode StreamTcpThreadInit(ThreadVars *, void *, void **);
+TmEcode StreamTcpThreadDeinit(ThreadVars *tv, void *data);
+int StreamTcpPacket (ThreadVars *tv, Packet *p, StreamTcpThread *stt,
+                     PacketQueue *pq);
+void StreamTcpSessionClear(void *ssnptr);
+uint32_t StreamTcpGetStreamSize(TcpStream *stream);
 
 #endif /* __STREAM_TCP_H__ */
 

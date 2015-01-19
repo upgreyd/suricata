@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2010 Open Information Security Foundation
+/* Copyright (C) 2007-2013 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -46,16 +46,13 @@
  *  \param det_ctx Detection engine thread context
  *  \param s Signature to inspect
  *  \param f flow (for pcre flowvar storage)
- *  \param flags app layer flags
- *  \param state App layer state
  *  \param p Packet
  *
  *  \retval 0 no match
  *  \retval 1 match
  */
 int DetectEngineInspectPacketPayload(DetectEngineCtx *de_ctx,
-        DetectEngineThreadCtx *det_ctx, Signature *s, Flow *f, uint8_t flags,
-        void *alstate, Packet *p)
+        DetectEngineThreadCtx *det_ctx, Signature *s, Flow *f, Packet *p)
 {
     SCEnter();
     int r = 0;
@@ -505,7 +502,7 @@ static int PayloadTestSig13(void)
     tv_diff.tv_sec = tv_end.tv_sec - tv_start.tv_sec;
     tv_diff.tv_usec = tv_end.tv_usec - tv_start.tv_usec;
 
-    printf("%ld.%06ld\n", tv_diff.tv_sec, (long int)tv_diff.tv_usec);
+    printf("%ld.%06ld\n", (long int)tv_diff.tv_sec, (long int)tv_diff.tv_usec);
 
     result = 1;
 
@@ -625,7 +622,7 @@ static int PayloadTestSig18(void)
         "byte_extract:1,2,one,string,dec,relative; "
         "content:\"|0C 0D 0E 0F|\"; distance:one; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 0) {
         result = 0;
         goto end;
     }
@@ -654,7 +651,7 @@ static int PayloadTestSig19(void)
         "byte_extract:1,2,one,string,hex,relative; "
         "content:\"|0C 0D 0E 0F|\"; distance:one; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 0) {
         result = 0;
         goto end;
     }
@@ -683,7 +680,7 @@ static int PayloadTestSig20(void)
         "byte_extract:1,2,one,string,dec,relative; "
         "content:\"|06 35 07 08|\"; offset:one; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 0) {
         result = 0;
         goto end;
     }
@@ -712,7 +709,7 @@ static int PayloadTestSig21(void)
         "byte_extract:1,2,one,string,dec,relative; "
         "content:\"|03 04 05 06|\"; depth:one; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 0) {
         result = 0;
         goto end;
     }
@@ -741,7 +738,7 @@ static int PayloadTestSig22(void)
         "byte_extract:1,2,one,string,dec,relative; "
         "content:\"|09 0A 0B 0C|\"; within:one; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 0) {
         result = 0;
         goto end;
     }
@@ -771,7 +768,7 @@ static int PayloadTestSig23(void)
         "byte_extract:1,3,two,string,dec,relative; "
         "byte_test:1,=,one,two,string,dec,relative; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 0) {
         result = 0;
         goto end;
     }
@@ -801,7 +798,7 @@ static int PayloadTestSig24(void)
         "byte_jump:1,one,string,dec,relative; "
         "content:\"|0D 0E 0F|\"; distance:0; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 0) {
         result = 0;
         goto end;
     }
@@ -833,7 +830,7 @@ static int PayloadTestSig25(void)
         "byte_extract:1,-4,one,string,dec,relative; "
         "content:\"|0C 0D 0E 0F|\"; distance:one; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 0) {
         result = 0;
         goto end;
     }
@@ -865,7 +862,7 @@ static int PayloadTestSig26(void)
         "byte_extract:1,-3000,one,string,dec,relative; "
         "content:\"|0C 0D 0E 0F|\"; distance:one; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) != 0) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) != 0) {
         result = 0;
         goto end;
     }
@@ -893,7 +890,7 @@ static int PayloadTestSig27(void)
         "depth:5; sid:1;)";
 
     p->flags |= PKT_STREAM_ADD;
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) != 1)
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) != 1)
         goto end;
 
     result = 1;
@@ -919,7 +916,7 @@ static int PayloadTestSig28(void)
         "offset:4; depth:12; sid:1;)";
 
     p->flags |= PKT_STREAM_ADD;
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) != 1)
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) != 1)
         goto end;
 
     result = 1;
@@ -943,7 +940,7 @@ static int PayloadTestSig29(void)
     char sig[] = "alert tcp any any -> any any (msg:\"dummy\"; "
         "pcre:/^.{4}/; content:\"nova\"; within:4; sid:1;)";
 
-    if (UTHPacketMatchSigMpm(p, sig, MPM_AC) == 1) {
+    if (UTHPacketMatchSigMpm(p, sig, DEFAULT_MPM) == 1) {
         result = 0;
         goto end;
     }

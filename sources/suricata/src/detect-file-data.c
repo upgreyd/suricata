@@ -58,6 +58,7 @@ void DetectFiledataRegister(void) {
     sigmatch_table[DETECT_FILE_DATA].Setup = DetectFiledataSetup;
     sigmatch_table[DETECT_FILE_DATA].Free  = NULL;
     sigmatch_table[DETECT_FILE_DATA].RegisterTests = NULL;
+    sigmatch_table[DETECT_FILE_DATA].flags = SIGMATCH_NOOPT;
 }
 
 /**
@@ -78,7 +79,8 @@ static int DetectFiledataSetup (DetectEngineCtx *de_ctx, Signature *s, char *str
         SCLogError(SC_ERR_INVALID_SIGNATURE, "Can't use file_data with flow:to_server or from_client with http.");
         return -1;
     }
-    s->init_flags |= SIG_FLAG_INIT_FILE_DATA;
+
+    s->list = DETECT_SM_LIST_HSBDMATCH;
 
     return 0;
 }

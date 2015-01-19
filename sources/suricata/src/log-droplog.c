@@ -1,4 +1,4 @@
-/* Copyright (C) 2007-2011 Open Information Security Foundation
+/* Copyright (C) 2007-2013 Open Information Security Foundation
  *
  * You can copy, redistribute or modify this Program under the terms of
  * the GNU General Public License version 2 as published by the Free
@@ -19,9 +19,10 @@
  * \file
  *
  * \author Gurvinder Singh <gurvindersinghdahiya@gmail.com>
+ * \author Victor Julien <victor@inliniac.net>
  *
- * Drop log module to log the dropped packet information
- *
+ * Drop log module to log the dropped packet information in a format
+ * compatible to Linux' Netfilter.
  */
 
 #include "suricata-common.h"
@@ -48,41 +49,15 @@
 #include "util-unittest.h"
 #include "util-unittest-helper.h"
 #include "util-classification-config.h"
-#include "util-mpm-b2g-cuda.h"
-#include "util-cuda-handlers.h"
 #include "util-privs.h"
 #include "util-print.h"
 #include "util-proto-name.h"
 #include "util-logopenfile.h"
+#include "util-time.h"
 
 #define DEFAULT_LOG_FILENAME "drop.log"
 
 #define MODULE_NAME "LogDropLog"
-
-TmEcode LogDropLog (ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogDropLogNetFilter(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogDropLogIPv6(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogDropLogDecoderEvent(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
-TmEcode LogDropLogThreadInit(ThreadVars *, void *, void **);
-TmEcode LogDropLogThreadDeinit(ThreadVars *, void *);
-OutputCtx *LogDropLogInitCtx(ConfNode *);
-static void LogDropLogDeInitCtx(OutputCtx *);
-void LogDropLogRegisterTests(void);
-void LogDropLogExitPrintStats(ThreadVars *, void *);
-
-/** \brief function to register the drop log module */
-void TmModuleLogDropLogRegister (void) {
-
-    tmm_modules[TMM_LOGDROPLOG].name = MODULE_NAME;
-    tmm_modules[TMM_LOGDROPLOG].ThreadInit = LogDropLogThreadInit;
-    tmm_modules[TMM_LOGDROPLOG].Func = LogDropLog;
-    tmm_modules[TMM_LOGDROPLOG].ThreadExitPrintStats = LogDropLogExitPrintStats;
-    tmm_modules[TMM_LOGDROPLOG].ThreadDeinit = LogDropLogThreadDeinit;
-    tmm_modules[TMM_LOGDROPLOG].RegisterTests = LogDropLogRegisterTests;
-    tmm_modules[TMM_LOGDROPLOG].cap_flags = 0;
-
-    OutputRegisterModule(MODULE_NAME, "drop", LogDropLogInitCtx);
-}
 
 typedef struct LogDropLogThread_ {
     /** LogFileCtx has the pointer to the file and a mutex to allow multithreading */
@@ -98,7 +73,7 @@ typedef struct LogDropLogThread_ {
  *
  * \return TM_ECODE_OK on success
  */
-TmEcode LogDropLogThreadInit(ThreadVars *t, void *initdata, void **data)
+static TmEcode LogDropLogThreadInit(ThreadVars *t, void *initdata, void **data)
 {
     if(initdata == NULL) {
         SCLogDebug("Error getting context for LogDropLog. \"initdata\" argument NULL");
@@ -124,7 +99,7 @@ TmEcode LogDropLogThreadInit(ThreadVars *t, void *initdata, void **data)
  *
  * \return TM_ECODE_OK on success
  */
-TmEcode LogDropLogThreadDeinit(ThreadVars *t, void *data)
+static TmEcode LogDropLogThreadDeinit(ThreadVars *t, void *data)
 {
     LogDropLogThread *dlt = (LogDropLogThread *)data;
     if (dlt == NULL) {
@@ -138,14 +113,38 @@ TmEcode LogDropLogThreadDeinit(ThreadVars *t, void *data)
     return TM_ECODE_OK;
 }
 
+/**
+ * \brief Destroy the LogFileCtx and cleared "drop" output module
+ *
+ * \param output_ctx pointer the output context to be cleared
+ */
+static void LogDropLogDeInitCtx(OutputCtx *output_ctx)
+{
+    OutputDropLoggerDisable();
+
+    if (output_ctx != NULL) {
+        LogFileCtx *logfile_ctx = (LogFileCtx *)output_ctx->data;
+        if (logfile_ctx != NULL) {
+            OutputUnregisterFileRotationFlag(&logfile_ctx->rotation_flag);
+            LogFileFreeCtx(logfile_ctx);
+        }
+        SCFree(output_ctx);
+    }
+}
 
 /**
  * \brief Create a new LogFileCtx for "drop" output style.
  * \param conf The configuration node for this output.
  * \return A LogFileCtx pointer on success, NULL on failure.
  */
-OutputCtx *LogDropLogInitCtx(ConfNode *conf)
+static OutputCtx *LogDropLogInitCtx(ConfNode *conf)
 {
+    if (OutputDropLoggerEnable() != 0) {
+        SCLogError(SC_ERR_CONF_YAML_ERROR, "only one 'drop' logger "
+            "can be enabled");
+        return NULL;
+    }
+
     LogFileCtx *logfile_ctx = LogFileNewCtx();
     if (logfile_ctx == NULL) {
         SCLogDebug("LogDropLogInitCtx: Could not create new LogFileCtx");
@@ -156,6 +155,7 @@ OutputCtx *LogDropLogInitCtx(ConfNode *conf)
         LogFileFreeCtx(logfile_ctx);
         return NULL;
     }
+    OutputRegisterFileRotationFlag(&logfile_ctx->rotation_flag);
 
     OutputCtx *output_ctx = SCCalloc(1, sizeof(OutputCtx));
     if (unlikely(output_ctx == NULL)) {
@@ -169,58 +169,33 @@ OutputCtx *LogDropLogInitCtx(ConfNode *conf)
 }
 
 /**
- * \brief Destroy the LogFileCtx and cleared "drop" output module
- *
- * \param output_ctx pointer the output context to be cleared
- */
-static void LogDropLogDeInitCtx(OutputCtx *output_ctx)
-{
-    if (output_ctx != NULL) {
-        LogFileCtx *logfile_ctx = (LogFileCtx *)output_ctx->data;
-        if (logfile_ctx != NULL) {
-            LogFileFreeCtx(logfile_ctx);
-        }
-        SCFree(output_ctx);
-    }
-}
-
-/** \brief Function to create the time string from the packet timestamp */
-static void CreateTimeString (const struct timeval *ts, char *str, size_t size) {
-    time_t time = ts->tv_sec;
-    struct tm local_tm;
-    struct tm *t = (struct tm *)SCLocalTime(time, &local_tm);
-
-    snprintf(str, size, "%02d/%02d/%02d-%02d:%02d:%02d.%06u",
-            t->tm_mon + 1, t->tm_mday, t->tm_year + 1900, t->tm_hour,
-            t->tm_min, t->tm_sec, (uint32_t) ts->tv_usec);
-}
-
-/**
  * \brief   Log the dropped packets in netfilter format when engine is running
  *          in inline mode
  *
  * \param tv    Pointer the current thread variables
  * \param p     Pointer the packet which is being logged
  * \param data  Pointer to the droplog struct
- * \param pq    Pointer the packet queue
- * \param postpq Pointer the packet queue where this packet will be sent
  *
  * \return return TM_EODE_OK on success
  */
-TmEcode LogDropLogNetFilter (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
-                      PacketQueue *postpq)
+static int LogDropLogNetFilter (ThreadVars *tv, const Packet *p, void *data)
 {
     LogDropLogThread *dlt = (LogDropLogThread *)data;
     uint16_t proto = 0;
     char timebuf[64];
 
-    if (!(PACKET_TEST_ACTION(p, ACTION_DROP)) || PKT_IS_PSEUDOPKT(p)) {
-        return TM_ECODE_OK;
-    }
-
     CreateTimeString(&p->ts, timebuf, sizeof(timebuf));
 
     SCMutexLock(&dlt->file_ctx->fp_mutex);
+
+    if (dlt->file_ctx->rotation_flag) {
+        dlt->file_ctx->rotation_flag  = 0;
+        if (SCConfLogReopen(dlt->file_ctx) != 0) {
+            /* Rotation failed, error already logged. */
+            SCMutexUnlock(&dlt->file_ctx->fp_mutex);
+            return TM_ECODE_FAILED;
+        }
+    }
 
     char srcip[46] = "";
     char dstip[46] = "";
@@ -296,44 +271,70 @@ TmEcode LogDropLogNetFilter (ThreadVars *tv, Packet *p, void *data, PacketQueue 
 }
 
 /**
+ * \brief Check if we need to drop-log this packet
+ *
+ * \param tv    Pointer the current thread variables
+ * \param p     Pointer the packet which is tested
+ *
+ * \retval bool TRUE or FALSE
+ */
+static int LogDropCondition(ThreadVars *tv, const Packet *p) {
+    if (!EngineModeIsIPS()) {
+        SCLogDebug("engine is not running in inline mode, so returning");
+        return FALSE;
+    }
+    if (PKT_IS_PSEUDOPKT(p)) {
+        SCLogDebug("drop log doesn't log pseudo packets");
+        return FALSE;
+    }
+
+    if (p->flow != NULL) {
+        int ret = FALSE;
+        FLOWLOCK_RDLOCK(p->flow);
+        if (p->flow->flags & FLOW_ACTION_DROP) {
+            if (PKT_IS_TOSERVER(p) && !(p->flow->flags & FLOW_TOSERVER_DROP_LOGGED))
+                ret = TRUE;
+            else if (PKT_IS_TOCLIENT(p) && !(p->flow->flags & FLOW_TOCLIENT_DROP_LOGGED))
+                ret = TRUE;
+        }
+        FLOWLOCK_UNLOCK(p->flow);
+        return ret;
+    } else if (PACKET_TEST_ACTION(p, ACTION_DROP)) {
+        return TRUE;
+    }
+
+    return FALSE;
+}
+
+/**
  * \brief   Log the dropped packets when engine is running in inline mode
  *
  * \param tv    Pointer the current thread variables
- * \param p     Pointer the packet which is being logged
  * \param data  Pointer to the droplog struct
- * \param pq    Pointer the packet queue
- * \param postpq Pointer the packet queue where this packet will be sent
+ * \param p     Pointer the packet which is being logged
  *
- * \return return TM_EODE_OK on success
+ * \retval 0 on succes
  */
-TmEcode LogDropLog (ThreadVars *tv, Packet *p, void *data, PacketQueue *pq,
-                      PacketQueue *postpq)
-{
-    /* Check if we are in inline mode or not, if not then no need to log */
-    extern uint8_t engine_mode;
-    if (!IS_ENGINE_MODE_IPS(engine_mode)) {
-        SCLogDebug("engine is not running in inline mode, so returning");
-        return TM_ECODE_OK;
-    }
+static int LogDropLogger(ThreadVars *tv, void *thread_data, const Packet *p) {
 
-    if ((p->flow != NULL) && (p->flow->flags & FLOW_ACTION_DROP)) {
-        if (PKT_IS_TOSERVER(p) && !(p->flow->flags & FLOW_TOSERVER_DROP_LOGGED)) {
-            p->flow->flags |= FLOW_TOSERVER_DROP_LOGGED;
-            return LogDropLogNetFilter(tv, p, data, pq, NULL);
+    int r = LogDropLogNetFilter(tv, p, thread_data);
+    if (r < 0)
+        return -1;
 
-        } else if (PKT_IS_TOCLIENT(p) && !(p->flow->flags & FLOW_TOCLIENT_DROP_LOGGED)) {
-            p->flow->flags |= FLOW_TOCLIENT_DROP_LOGGED;
-            return LogDropLogNetFilter(tv, p, data, pq, NULL);
+    if (p->flow) {
+        FLOWLOCK_RDLOCK(p->flow);
+        if (p->flow->flags & FLOW_ACTION_DROP) {
+            if (PKT_IS_TOSERVER(p) && !(p->flow->flags & FLOW_TOSERVER_DROP_LOGGED))
+                p->flow->flags |= FLOW_TOSERVER_DROP_LOGGED;
+            else if (PKT_IS_TOCLIENT(p) && !(p->flow->flags & FLOW_TOCLIENT_DROP_LOGGED))
+                p->flow->flags |= FLOW_TOCLIENT_DROP_LOGGED;
         }
-    } else {
-        return LogDropLogNetFilter(tv, p, data, pq, postpq);
+        FLOWLOCK_UNLOCK(p->flow);
     }
-
-    return TM_ECODE_OK;
-
+    return 0;
 }
 
-void LogDropLogExitPrintStats(ThreadVars *tv, void *data) {
+static void LogDropLogExitPrintStats(ThreadVars *tv, void *data) {
     LogDropLogThread *dlt = (LogDropLogThread *)data;
     if (dlt == NULL) {
         return;
@@ -350,8 +351,7 @@ void LogDropLogExitPrintStats(ThreadVars *tv, void *data) {
 int LogDropLogTest01()
 {
     int result = 0;
-    extern uint8_t engine_mode;
-    SET_ENGINE_MODE_IPS(engine_mode);
+    EngineModeSetIPS();
 
     uint8_t *buf = (uint8_t *) "GET /one/ HTTP/1.1\r\n"
         "Host: one.example.org\r\n";
@@ -399,7 +399,8 @@ int LogDropLogTest01()
     else
         result = 0;
 
-    LogDropLog(NULL, p, &dlt, NULL, NULL);
+    if (LogDropCondition(NULL, p) == TRUE)
+        LogDropLogger(NULL, &dlt, p);
 
     if (dlt.drop_cnt == 0) {
         printf("Packet should be logged but its not\n");
@@ -412,6 +413,7 @@ int LogDropLogTest01()
     DetectEngineCtxFree(de_ctx);
 
     UTHFreePackets(&p, 1);
+    EngineModeSetIDS();
     return result;
 }
 
@@ -419,8 +421,7 @@ int LogDropLogTest01()
 int LogDropLogTest02()
 {
     int result = 0;
-    extern uint8_t engine_mode;
-    SET_ENGINE_MODE_IPS(engine_mode);
+    EngineModeSetIPS();
 
     uint8_t *buf = (uint8_t *) "GET";
 
@@ -467,7 +468,8 @@ int LogDropLogTest02()
     else
         result = 0;
 
-    LogDropLog(NULL, p, &dlt, NULL, NULL);
+    if (LogDropCondition(NULL, p) == TRUE)
+        LogDropLogger(NULL, &dlt, p);
 
     if (dlt.drop_cnt != 0) {
         printf("Packet shouldn't be logged but it is\n");
@@ -480,19 +482,34 @@ int LogDropLogTest02()
     DetectEngineCtxFree(de_ctx);
 
     UTHFreePackets(&p, 1);
+
+    EngineModeSetIDS();
     return result;
 }
-#endif
 
 /**
  * \brief This function registers unit tests for AlertFastLog API.
  */
-void LogDropLogRegisterTests(void)
+static void LogDropLogRegisterTests(void)
 {
-
-#ifdef UNITTESTS
     UtRegisterTest("LogDropLogTest01", LogDropLogTest01, 1);
     UtRegisterTest("LogDropLogTest02", LogDropLogTest02, 1);
-#endif /* UNITTESTS */
+}
+#endif
 
+/** \brief function to register the drop log module */
+void TmModuleLogDropLogRegister (void) {
+
+    tmm_modules[TMM_LOGDROPLOG].name = MODULE_NAME;
+    tmm_modules[TMM_LOGDROPLOG].ThreadInit = LogDropLogThreadInit;
+    tmm_modules[TMM_LOGDROPLOG].ThreadExitPrintStats = LogDropLogExitPrintStats;
+    tmm_modules[TMM_LOGDROPLOG].ThreadDeinit = LogDropLogThreadDeinit;
+#ifdef UNITTESTS
+    tmm_modules[TMM_LOGDROPLOG].RegisterTests = LogDropLogRegisterTests;
+#endif
+    tmm_modules[TMM_LOGDROPLOG].cap_flags = 0;
+    tmm_modules[TMM_LOGDROPLOG].flags = TM_FLAG_LOGAPI_TM;
+
+    OutputRegisterPacketModule(MODULE_NAME, "drop", LogDropLogInitCtx,
+            LogDropLogger, LogDropCondition);
 }

@@ -139,6 +139,7 @@ void VerdictIPFWThreadExitStats(ThreadVars *, void *);
 TmEcode VerdictIPFWThreadDeinit(ThreadVars *, void *);
 
 TmEcode DecodeIPFWThreadInit(ThreadVars *, void *, void **);
+TmEcode DecodeIPFWThreadDeinit(ThreadVars *tv, void *data);
 TmEcode DecodeIPFW(ThreadVars *, Packet *, void *, PacketQueue *, PacketQueue *);
 
 /**
@@ -185,7 +186,7 @@ void TmModuleDecodeIPFWRegister (void) {
     tmm_modules[TMM_DECODEIPFW].ThreadInit = DecodeIPFWThreadInit;
     tmm_modules[TMM_DECODEIPFW].Func = DecodeIPFW;
     tmm_modules[TMM_DECODEIPFW].ThreadExitPrintStats = NULL;
-    tmm_modules[TMM_DECODEIPFW].ThreadDeinit = NULL;
+    tmm_modules[TMM_DECODEIPFW].ThreadDeinit = DecodeIPFWThreadDeinit;
     tmm_modules[TMM_DECODEIPFW].RegisterTests = NULL;
     tmm_modules[TMM_DECODEIPFW].flags = TM_FLAG_DECODE_TM;
 }
@@ -238,7 +239,7 @@ TmEcode ReceiveIPFWLoop(ThreadVars *tv, void *data, void *slot)
     SCLogInfo("Thread '%s' will run on port %d (item %d)",
               tv->name, nq->port_num, ptv->ipfw_index);
     while (1) {
-        if (suricata_ctl_flags & (SURICATA_STOP || SURICATA_KILL)) {
+        if (unlikely(suricata_ctl_flags != 0)) {
             SCReturnInt(TM_ECODE_OK);
         }
 
@@ -305,7 +306,7 @@ TmEcode ReceiveIPFWLoop(ThreadVars *tv, void *data, void *slot)
             SCReturnInt(TM_ECODE_FAILED);
         }
 
-        SCPerfSyncCountersIfSignalled(tv, 0);
+        SCPerfSyncCountersIfSignalled(tv);
     }
 
     SCReturnInt(TM_ECODE_OK);
@@ -393,7 +394,11 @@ void ReceiveIPFWThreadExitStats(ThreadVars *tv, void *data)
 
     SCEnter();
 
-    SCLogInfo("(%s) Packets %" PRIu32 ", bytes %" PRIu64 "", tv->name, ptv->pkts, ptv->bytes);
+    SCLogNotice("(%s) Treated: Pkts %" PRIu32 ", Bytes %" PRIu64 ", Errors %" PRIu32 "",
+            tv->name, ptv->pkts, ptv->bytes, ptv->errs);
+    SCLogNotice("(%s) Verdict: Accepted %"PRIu32", Dropped %"PRIu32 "",
+            tv->name, ptv->accepted, ptv->dropped);
+
 
     SCReturn;
 }
@@ -416,8 +421,6 @@ TmEcode ReceiveIPFWThreadDeinit(ThreadVars *tv, void *data)
         SCLogWarning(SC_WARN_IPFW_UNBIND,"Unable to disable ipfw socket: %s",strerror(errno));
         SCReturnInt(TM_ECODE_FAILED);
     }
-
-    data = (void *)ptv;
 
     SCReturnInt(TM_ECODE_OK);
 }
@@ -442,6 +445,11 @@ TmEcode DecodeIPFW(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Packe
 
     SCEnter();
 
+    /* XXX HACK: flow timeout can call us for injected pseudo packets
+     *           see bug: https://redmine.openinfosecfoundation.org/issues/1107 */
+    if (p->flags & PKT_PSEUDO_STREAM_END)
+        return TM_ECODE_OK;
+
     /* update counters */
     SCPerfCounterIncr(dtv->counter_pkts, tv->sc_perf_pca);
     SCPerfCounterAddUI64(dtv->counter_bytes, tv->sc_perf_pca, GET_PKT_LEN(p));
@@ -463,6 +471,8 @@ TmEcode DecodeIPFW(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Packe
        SCReturnInt(TM_ECODE_FAILED);
     }
 
+    PacketDecodeFinalize(tv, dtv, p);
+
     SCReturnInt(TM_ECODE_OK);
 }
 
@@ -477,7 +487,7 @@ TmEcode DecodeIPFW(ThreadVars *tv, Packet *p, void *data, PacketQueue *pq, Packe
 TmEcode DecodeIPFWThreadInit(ThreadVars *tv, void *initdata, void **data)
 {
     DecodeThreadVars *dtv = NULL;
-    dtv = DecodeThreadVarsAlloc();
+    dtv = DecodeThreadVarsAlloc(tv);
 
     if (dtv == NULL)
         SCReturnInt(TM_ECODE_FAILED);
@@ -486,6 +496,13 @@ TmEcode DecodeIPFWThreadInit(ThreadVars *tv, void *initdata, void **data)
 
     *data = (void *)dtv;
 
+    SCReturnInt(TM_ECODE_OK);
+}
+
+TmEcode DecodeIPFWThreadDeinit(ThreadVars *tv, void *data)
+{
+    if (data != NULL)
+        DecodeThreadVarsFree(data);
     SCReturnInt(TM_ECODE_OK);
 }
 
