@@ -1,0 +1,191 @@
+#In RHEL 5 and older, python2 packages that install python modules need to define python_sitelib
+# or python_sitearch macros that tell where to find the python directory that modules are installed in. 
+#This is not needed in current Fedora or with python3 modules as the macros are defined i
+#by rpm and the python3-devel package. To define those conditionally you can use this:
+%if 0%{?rhel} && 0%{?rhel} <= 5
+%{!?python_sitelib: %global python_sitelib %(%{__python} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib())")}
+%{!?python_sitearch: %global python_sitearch %(%{__python} -c "from distutils.sysconfig import get_python_lib; print(get_python_lib(1))")}
+%endif
+
+Summary: Intrusion Detection System
+Name: suricata
+Version: 1.4.6
+Release: 2%{?dist}
+License: GPLv2+
+Group: Applications/Internet
+URL: http://www.openinfosecfoundation.org
+Source0: http://www.openinfosecfoundation.org/download/%{name}-%{version}.tar.gz
+Source1: suricata.init
+Source2: suricata.sysconfig
+Source3: suricata.logrotate
+# Get the latest classification,reference, and gen-msg files from upstream
+Source4: http://rules.emergingthreats.net/open/suricata/rules/classification.config
+Source5: http://rules.emergingthreats.net/open/suricata/rules/reference.config
+Source6: http://rules.emergingthreats.net/open/suricata/rules/gen-msg.map
+#Include patch for backporting to simplejson verisons that don't contain JSONDecodeError exceptions
+Patch0: suricatasc-simplejson-backport.patch
+BuildRoot: %{_tmppath}/%{name}-%{version}-%{release}-root-%(%{__id_u} -n)
+%if 0%{?rhel} && 0%{?rhel} <= 5
+BuildRequires: file
+BuildRequires: python-devel
+%else
+BuildRequires: file-devel
+%endif
+BuildRequires: libyaml-devel libprelude-devel
+BuildRequires: libnfnetlink-devel libnetfilter_queue-devel libnet-devel
+BuildRequires: zlib-devel libpcap-devel pcre-devel libcap-ng-devel
+BuildRequires: libjansson-devel >= 2.4
+Requires: chkconfig libprelude python-simplejson python-argparse
+Requires: libjansson >= 2.4
+Requires(pre): shadow-utils
+
+%description
+The Suricata Engine is an Open Source Next Generation Intrusion
+Detection and Prevention Engine. This engine is not intended to
+just replace or emulate the existing tools in the industry, but
+will bring new ideas and technologies to the field. This new Engine
+supports Multi-threading, Automatic Protocol Detection (IP, TCP,
+UDP, ICMP, HTTP, TLS, FTP and SMB! ), Gzip Decompression, Fast IP
+Matching and coming soon hardware acceleration on CUDA and OpenCL
+GPU cards.
+
+%prep
+%setup -q
+%patch0 -p1
+
+%build
+
+%configure --enable-gccprotect --enable-prelude --enable-unix-socket
+make %{?_smp_mflags}
+
+%pre
+getent group suricata >/dev/null || groupadd -r suricata
+getent passwd suricata >/dev/null || \
+	useradd -r -g suricata -d /home/suricata -s /sbin/nologin \
+	-c "Suricata IDS account" suricata
+exit 0
+
+%install
+rm -rf $RPM_BUILD_ROOT
+make DESTDIR="${RPM_BUILD_ROOT}" "bindir=%{_sbindir}" install
+
+# Setup etc directory
+mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/suricata/rules
+install -m 600 suricata.yaml $RPM_BUILD_ROOT%{_sysconfdir}/suricata
+mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/rc.d/init.d
+install -m 0755 %{SOURCE1} $RPM_BUILD_ROOT%{_sysconfdir}/rc.d/init.d/suricata
+mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/sysconfig
+install -m 0755 %{SOURCE2} $RPM_BUILD_ROOT%{_sysconfdir}/sysconfig/suricata
+mkdir -p $RPM_BUILD_ROOT%{_sysconfdir}/logrotate.d
+install -m 644 %{SOURCE3} $RPM_BUILD_ROOT%{_sysconfdir}/logrotate.d/suricata
+
+#include default config files for possible use
+install -m 644 %{SOURCE4} $RPM_BUILD_ROOT%{_sysconfdir}/suricata
+install -m 644 %{SOURCE5} $RPM_BUILD_ROOT%{_sysconfdir}/suricata
+install -m 644 %{SOURCE6} $RPM_BUILD_ROOT%{_sysconfdir}/suricata
+install -m 644 threshold.config $RPM_BUILD_ROOT%{_sysconfdir}/suricata
+
+# Make logging directory
+mkdir -p $RPM_BUILD_ROOT/%{_var}/log/suricata
+mkdir -p $RPM_BUILD_ROOT/%{_var}/log/suricata/files
+
+# Make /var/run/suricata directory, where unix-command socket goes
+mkdir -p $RPM_BUILD_ROOT/%{_var}/run/suricata
+
+# Remove a couple things so they don't get picked up
+rm -rf $RPM_BUILD_ROOT%{_includedir}
+rm -f $RPM_BUILD_ROOT%{_libdir}/libhtp.la
+rm -f $RPM_BUILD_ROOT%{_libdir}/libhtp.a
+rm -f $RPM_BUILD_ROOT%{_libdir}/libhtp.so
+rm -rf $RPM_BUILD_ROOT%{_libdir}/pkgconfig
+
+%check
+make check
+
+%clean
+rm -rf $RPM_BUILD_ROOT
+
+%post
+/sbin/chkconfig --add suricata
+/sbin/chkconfig --level 345 suricata on
+/sbin/ldconfig
+
+# If upgrading
+if [ $1 -gt 1 ]; then
+  echo "Suricata has been upgraded: restarting services"
+  /sbin/service suricata restart
+fi
+
+
+%preun
+if [ $1 -eq 0 ]; then
+   /sbin/service suricata stop > /dev/null 2>&1
+   /sbin/chkconfig --del suricata
+fi
+
+%postun 
+/sbin/ldconfig
+
+%files
+%defattr(-,root,root,-)
+%doc COPYING doc/INSTALL
+%{_defaultdocdir}/%{name}
+%{_sbindir}/suricata
+%{_bindir}/suricatasc
+%{_libdir}/libhtp-*
+%attr(750,suricata,suricata) %dir %{_var}/log/suricata
+%attr(750,suricata,suricata) %dir %{_var}/log/suricata/files
+%attr(755,suricata,suricata) %dir %{_var}/run/suricata
+%config(noreplace) %attr(0600,root,root) %{_sysconfdir}/suricata/suricata.yaml
+%config(noreplace) %attr(0600,root,root) %{_sysconfdir}/suricata/classification.config
+%config(noreplace) %attr(0600,root,root) %{_sysconfdir}/suricata/reference.config
+%config(noreplace) %attr(0600,root,root) %{_sysconfdir}/suricata/threshold.config
+%config(noreplace) %attr(0600,root,root) %{_sysconfdir}/suricata/gen-msg.map
+%dir %attr(750,root,root) %{_sysconfdir}/suricata
+%dir %attr(750,root,root) %{_sysconfdir}/suricata/rules
+%config(noreplace) %attr(0600,root,root) %{_sysconfdir}/sysconfig/suricata
+%attr(755,root,root) %{_sysconfdir}/rc.d/init.d/suricata
+%config(noreplace) %attr(644,root,root) %{_sysconfdir}/logrotate.d/suricata
+
+# Files for python
+
+# Python 2.4 distutils doesn't install egg-info, so we only care about it
+# if rhel >= 6.
+%if 0%{?rhel} && 0%{?rhel} >= 6
+%{python_sitelib}/suricatasc*.egg-info
+%endif
+%{python_sitelib}/suricatasc
+%{python_sitelib/suricatasc/*
+
+%changelog
+* Mon Jan 02 2013 Domingo Kiser <dkiser@godaddy.com> 1.4.6-2
+- Update to support unix-command, fixing suricatasc for
+- older versions of simplejson that don't have the
+- JSONDecodeError exception class yet.
+* Fri Dec 6 2013 Domingo Kiser <dkiser@godaddy.com> 1.4.6
+- Bumping up to latest stable 1.4.6 release.
+* Mon Dec 10 2012 Domingo Kiser <dkiser@godaddy.com> 1.4rc1
+- Updating to 1.4RC1 code. Also added python-simplejson to
+- requires since new suricatasc manager framework requries
+- this. Also added spec logic to restart suricata if it
+- has been upgraded.
+
+* Tue Nov 13 2012 Domingo Kiser <dkiser@godaddy.com> 1.4beta2-2
+- Adding /var/log/suricata/files for bad stuffs storage
+
+* Thu Oct 18 2012 Domingo Kiser <dkiser@godaddy.com> 1.4beta2
+- Updated to support 1.4 beta 2 release
+- Force the use of prelude
+
+* Thu Jul 01 2010 Steve Grubb <sgrubb@redhat.com> 1.0.0-1
+- New upstream release
+
+* Fri May 07 2010 Steve Grubb <sgrubb@redhat.com> 0.9.0-1
+- New upstream release
+
+* Tue Apr 20 2010 Steve Grubb <sgrubb@redhat.com> 0.8.2-1
+- New upstream release
+
+* Sat Feb 27 2010 Steve Grubb <sgrubb@redhat.com> 0.8.1-1
+- Initial packaging
+

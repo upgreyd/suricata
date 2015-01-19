@@ -1,0 +1,133 @@
+#!/bin/bash
+#
+# suricata     This starts and stops the suricata IDS engine
+#
+# chkconfig: 345 40 60
+# description:  Suricata is a Network Intrusion Detection tool that \
+#		that can sniff network traffic or process tcpdump cpatures \
+#		to spot suspicious packets
+#
+# processname: /usr/sbin/suricata
+# config: /etc/sysconfig/suricata
+# config: /etc/suricata/suricata.yaml
+# pidfile: /var/run/suricata.pid
+#
+# Return values according to LSB for all commands but status:
+# 0 - success
+# 1 - generic or unspecified error
+# 2 - invalid or excess argument(s)
+# 3 - unimplemented feature (e.g. "reload")
+# 4 - insufficient privilege
+# 5 - program is not installed
+# 6 - program is not configured
+# 7 - program is not running
+#
+
+
+PATH=/sbin:/bin:/usr/bin:/usr/sbin
+prog="suricata"
+
+# Source function library.
+. /etc/init.d/functions
+
+# Allow anyone to run status
+if [ "$1" = "status" ] ; then
+	status $prog
+	RETVAL=$?
+	exit $RETVAL
+fi
+
+# Check that we are root ... so non-root users stop here
+test $EUID = 0  ||  exit 4
+
+# Check config
+test -f /etc/sysconfig/suricata && . /etc/sysconfig/suricata
+
+RETVAL=0
+
+start(){
+	test -x /usr/sbin/suricata  || exit 5
+	test -f /etc/suricata/suricata.yaml  || exit 6
+
+	echo -n $"Starting $prog: "
+
+	# If no user defined, use the id of the person running the script
+	if [ -z "$USER" ];then
+		USER=`id -nu`
+	fi
+
+	# If no group defined, use the group id of the person running the script
+	if [ -z "$GROUP" ];then
+		GROUP=`id -ng`
+	fi	
+
+	# If no pid file... make it up
+	if [ -z "$PID" ];then
+		PID="/var/run/$prog.pid"
+	fi
+
+	# Localization for auditd is controlled in /etc/synconfig/auditd
+	#unset HOME MAIL USER USERNAME
+	daemon $prog "-c $CONF -i $INTERFACE --user $USER --group $GROUP --pidfile $PID -D"
+	RETVAL=$?
+	echo
+	if test $RETVAL = 0 ; then
+		touch /var/lock/subsys/suricata
+	fi
+	return $RETVAL
+}
+
+stop(){
+	echo -n $"Stopping $prog: "
+	killproc $prog
+	RETVAL=$?
+	echo
+	rm -f /var/lock/subsys/suricata
+	return $RETVAL
+}
+
+reload(){
+	test -f /etc/suricata/suricata.yaml  || exit 6
+	echo -n $"Reloading configuration: "	
+	killproc $prog -HUP
+	RETVAL=$?
+	echo
+	return $RETVAL
+}
+
+restart(){
+	test -f /etc/suricata/suricata.yaml  || exit 6
+	stop
+	start
+}
+
+condrestart(){
+	[ -e /var/lock/subsys/suricata ] && restart
+	return 0
+}
+
+
+# See how we were called.
+case "$1" in
+    start)
+	start
+	;;
+    stop)
+	stop
+	;;
+    restart)
+	restart
+	;;
+    reload|force-reload)
+	reload
+	;;
+    condrestart|try-restart)
+	condrestart
+	;;
+    *)
+	echo $"Usage: $0 {start|stop|status|restart|condrestart|try-restart|reload|force-reload}"
+	RETVAL=3
+esac
+
+exit $RETVAL
+

@@ -1,0 +1,16 @@
+# Configuration file for the suricata startup
+
+# configuration path
+CONF=/etc/suricata/suricata.yaml
+
+# interface to inspect on
+INTERFACE="eth0"
+
+# When permissions are dropped what user should be utilized
+USER="suricata"
+
+# When permissions are dropped what group should be utilized
+GROUP="suricata"
+
+# PID FILE LOCATIN
+PID=/var/run/suricata.pid

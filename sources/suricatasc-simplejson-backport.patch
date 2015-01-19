@@ -1,0 +1,12 @@
+diff -rupN suricata-1.4.6.orig/scripts/suricatasc/src/suricatasc.py suricata-1.4.6-suricatasc-simplejson-backport/scripts/suricatasc/src/suricatasc.py
+--- suricata-1.4.6.orig/scripts/suricatasc/src/suricatasc.py	2013-09-24 10:28:37.000000000 +0000
++++ suricata-1.4.6-suricatasc-simplejson-backport/scripts/suricatasc/src/suricatasc.py	2014-01-03 18:12:23.000000000 +0000
+@@ -90,6 +90,8 @@ class SuricataSC:
+             try:
+                 cmdret = json.loads(data)
+                 break
++            except ValueError:
++                sleep(0.3)
+             except json.decoder.JSONDecodeError:
+                 sleep(0.3)
+         return cmdret
